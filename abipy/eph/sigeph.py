@@ -1013,6 +1013,7 @@ class SigEPhFile(AbinitNcFile, Has_Structure, Has_ElectronBands, NotebookWriter)
 
         eV_Ry = 2 * abu.eV_Ha
         eV_s = abu.eV_to_THz*1e12 * 2*np.pi
+        Ang_Bohr = 1/abu.Bohr_Ang
 
         #get the lifetimes as an array
         qpes = self.get_qp_array(mode='ks+lifetimes')
@@ -1025,13 +1026,13 @@ class SigEPhFile(AbinitNcFile, Has_Structure, Has_ElectronBands, NotebookWriter)
         from BoltzTraP2 import units as btp_units
         import matplotlib.pyplot as plt
         # Obtain each piece of information from the corresponding function.
-        fermie = self.ebands.fermie*eV_Ry
+        fermie = self.ebands.fermie*abu.eV_Ha
         atoms = self.ebands.structure.to_ase_atoms()
-        volume = self.ebands.structure.volume
-        nelect = 6
+        volume = self.ebands.structure.volume*Ang_Bohr**3
+        nelect = int((bstop-bstart)/self.nspden)
         kpoints = [k.frac_coords for k in self.sigma_kpoints]
         #TODO handle spin
-        eig = qpes[0,:,bstart:bstop,0].T*eV_Ry
+        eig = qpes[0,:,bstart:bstop,0].real.T*abu.eV_Ha
 
         #prepare band interpolation
         data = AbipyBoltztrap(fermie, atoms, nelect, kpoints, eig)
@@ -1043,10 +1044,16 @@ class SigEPhFile(AbinitNcFile, Has_Structure, Has_ElectronBands, NotebookWriter)
         eig_fine, vvband, cband = fite.getBTPbands(equivalences, coeffs, lattvec, curvature=False)
 
         itemp_list = list(range(self.ntemp)) if itemp_list is None else duck.list_ints(itemp_list)
+        
+        sigma   = np.zeros((self.ntemp,3,3)) # TODO: add a chemical potential dimension
+        seebeck = np.zeros((self.ntemp,3,3)) 
+        kappa   = np.zeros((self.ntemp,3,3))
+        Hall    = np.zeros((self.ntemp,3,3,3))
+
         for itemp in itemp_list:
 
             #TODO handle spin
-            linewidth = qpes[0, :, bstart:bstop, itemp].imag.T*eV_Ry
+            linewidth = qpes[0, :, bstart:bstop, itemp].imag.T*eV_s*2
 
             #prepare lifetimes interpolation
             data = AbipyBoltztrap(fermie, atoms, nelect, kpoints, linewidth)
@@ -1071,23 +1078,23 @@ class SigEPhFile(AbinitNcFile, Has_Structure, Has_ElectronBands, NotebookWriter)
                 plt.show()
 
             #plots
-            Tr = np.linspace(100., 600., num=10)
-            margin = 10. * btp_units.BOLTZMANN * Tr.max()
-            mur_indices = np.logical_and(wmesh > wmesh.min() + margin,
-                                         wmesh < wmesh.max() - margin)
-            mur = wmesh[mur_indices]
+            # Tr: temperature; mur: chemical potential
+            # tau is computed for a single temperature and a single chemical potential (in this loop)
+            # TODO: use self.mu_e for mur
+            Tr = np.array([self.tmesh[itemp]])
+            mur = np.array([fermie])
 
             N, L0, L1, L2, Lm11 = BL.fermiintegrals(wmesh, dos, vvdos_tau, mur=mur, Tr=Tr)
-            sigma, seebeck, kappa, Hall = BL.calc_Onsager_coefficients(L0, L1, L2, mur, Tr, volume)
+            sigma[itemp], seebeck[itemp], kappa[itemp], Hall[itemp] = BL.calc_Onsager_coefficients(L0, L1, L2, mur, Tr, volume)
 
-            fig = plt.figure()
-            plt.plot((mur - fermie), sigma[0, :, 0, 0], label="conductivity")
-            plt.legend()
+            #fig = plt.figure()
+            #plt.plot((mur - fermie), sigma[0, :, 0, 0], label="conductivity")
+            #plt.legend()
 
-            fig = plt.figure()
-            plt.plot((mur - fermie), seebeck[0, :, 0, 0], label="seebeck")
-            plt.legend()
-            plt.show()
+            #fig = plt.figure()
+            #plt.plot((mur - fermie), seebeck[0, :, 0, 0], label="seebeck")
+            #plt.legend()
+            #plt.show()
             exit()
 
     def interpolate(self, itemp_list=None, lpratio=5, mode="qp", ks_ebands_kpath=None, ks_ebands_kmesh=None,
