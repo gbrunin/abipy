@@ -1081,7 +1081,11 @@ class SigEPhFile(AbinitNcFile, Has_Structure, Has_ElectronBands, NotebookWriter)
             # Tr: temperature; mur: chemical potential
             # tau is computed for a single temperature and a single chemical potential (in this loop)
             # TODO: use self.mu_e for mur
-            Tr = np.array([self.tmesh[itemp]])
+            # TODO: fix BTP2 for the 0 K case...
+            if self.tmesh[itemp] == 0.0:
+                Tr = np.array([1.0])
+            else:
+                Tr = np.array([self.tmesh[itemp]])
             mur = np.array([fermie])
 
             N, L0, L1, L2, Lm11 = BL.fermiintegrals(wmesh, dos, vvdos_tau, mur=mur, Tr=Tr)
