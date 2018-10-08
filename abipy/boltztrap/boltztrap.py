@@ -4,14 +4,18 @@ This module containes a Bolztrap2 class to interpolate and analyse the results
 It also provides interfaces with Abipy objects allowing to
 initialize the Boltztrap2 calculation from Abinit files
 """
+import time
 import pickle
 import numpy as np
 from monty.string import marquee
 from monty.termcolor import cprint
 from abipy.tools.plotting import add_fig_kwargs
 from abipy.tools import duck
+from abipy.electrons.ebands import ElectronBands
+from abipy.core.kpoints import Kpath
+from abipy.core.structure import Structure
 import abipy.core.abinit_units as abu
-import time
+from pymatgen.symmetry.bandstructure import HighSymmKpath
 
 def timeit(method):
     """
@@ -46,18 +50,21 @@ class AbipyBoltztrap():
     It creates an instance of Bolztrap2Results to save the data
     Enter with quantities in the IBZ and interpolate to a fine BZ mesh
     """
-    def __init__(self,fermi,atoms,nelect,kpoints,eig,volume,linewidths=None,tmesh=None,
+    def __init__(self,fermi,structure,nelect,kpoints,eig,volume,linewidths=None,tmesh=None,
                  mommat=None,magmom=None,lpratio=1,nworkers=1):
+        #data needed by boltztrap
         self.fermi = fermi
-        self.atoms = atoms
+        self.atoms = structure.to_ase_atoms()
         self.nelect = nelect
         self.kpoints = np.array(kpoints)
-        self.eig = eig
         self.volume = volume
-        self.linewidths = linewidths
-        self.tmesh = tmesh
         self.mommat = mommat
         self.magmom = magmom
+
+        self.eig = eig
+        self.structure = structure
+        self.linewidths = linewidths
+        self.tmesh = tmesh
         self.nworkers = nworkers
         self.lpratio = lpratio
 
@@ -72,6 +79,12 @@ class AbipyBoltztrap():
         if not hasattr(self,'_coefficients'):
             self.compute_coefficients()
         return self._coefficients
+    
+    @property
+    def linewidth_coefficients(self):
+        if not hasattr(self,'_linewidth_coefficients'):
+            self.compute_coefficients()
+        return self._linewidth_coefficients
 
     @property
     def rmesh(self):
@@ -92,6 +105,26 @@ class AbipyBoltztrap():
         return len(self.linewidths)
 
     @classmethod
+    def from_ebands(cls):
+        """Initialize from an ebands obejct"""
+        raise NotImplementedError('TODO')
+
+    @classmethod
+    def from_ddk(cls):
+        """Intialize from a DDK file """
+        raise NotImplementedError('TODO')
+
+    @classmethod
+    def from_dftdata(cls,dftdata,tmesh,lpratio=1,nworkers=1):
+        """Initialize an instance of this class from a dftdata isntance from Boltztrap"""
+       
+        structure = Structure.from_ase_atoms(dftdata.atoms)
+        return cls(dftdata.fermi,structure,dftdata.nelect,dftdata.kpoints,dftdata.ebands,
+                   dftdata.get_volume(),linewidths=None,tmesh=tmesh,
+                   mommat=dftdata.mommat,magmom=None,lpratio=lpratio,nworkers=nworkers)
+
+
+    @classmethod
     def from_sigeph(cls,sigeph,itemp_list=None,bstart=None,bstop=None,lpratio=1):
         """Initialize interpolation of the bands and lifetimes from a sigeph object"""
 
@@ -105,7 +138,7 @@ class AbipyBoltztrap():
         if bstart is None: bstart = sigeph.reader.max_bstart
         if bstop is None:  bstop  = sigeph.reader.min_bstop
         fermi  = sigeph.ebands.fermie*abu.eV_Ha
-        atoms  = sigeph.ebands.structure.to_ase_atoms()
+        structure = sigeph.ebands.structure
         volume = sigeph.ebands.structure.volume*Ang_Bohr**3
         nelect = sigeph.ebands.nelect
         kpoints = [k.frac_coords for k in sigeph.sigma_kpoints]
@@ -123,7 +156,7 @@ class AbipyBoltztrap():
             linewidth = qpes[0, :, bstart:bstop, itemp].imag.T*abu.eV_Ha
             linewidths.append(linewidth)
 
-        return cls(fermi, atoms, nelect, kpoints, eig, volume, linewidths=linewidths, 
+        return cls(fermi, structure, nelect, kpoints, eig, volume, linewidths=linewidths, 
                    tmesh=tmesh, lpratio=lpratio)
 
     def get_lattvec(self):
@@ -140,6 +173,38 @@ class AbipyBoltztrap():
         if not hasattr(self,"_lattvec"):
             self._lattvec = self.atoms.get_cell().T / abu.Bohr_Ang
         return self._lattvec
+
+    def get_bands(self,kpath=None,line_density=20,vertices_names=None,linewidth_itemp=False):
+        """Compute the band-structure using the computed coefficients"""
+        #electronic structure
+        from BoltzTraP2 import fite
+
+        if kpath is None:
+            if vertices_names is None:
+               vertices_names = [(k.frac_coords, k.name) for k in self.structure.hsym_kpoints]
+
+            kpath = Kpath.from_vertices_and_names(self.structure, vertices_names, line_density=line_density)
+
+        #call boltztrap to interpolate
+        coeffs = self.coefficients 
+        eigens_kpath, vvband = fite.getBands(kpath.frac_coords, self.equivalences, self.lattvec, coeffs)
+      
+        linewidths_kpath = None 
+        if linewidth_itemp is not False: 
+            coeffs = self.linewidth_coefficients[linewidth_itemp]
+            linewidths_kpath, vvband = fite.getBands(kpath.frac_coords, self.equivalences, self.lattvec, coeffs)
+            linewidths_kpath = linewidths_kpath.T[np.newaxis,:,:]*abu.Ha_eV
+    
+        #convert units and shape
+        eigens_kpath   = eigens_kpath.T[np.newaxis,:,:]*abu.Ha_eV
+        occfacts_kpath = np.zeros_like(eigens_kpath)
+        nspinor1 = 1
+        nspden1 = 1
+
+        #return a ebands object
+        return ElectronBands(self.structure, kpath, eigens_kpath, self.fermi*abu.Ha_eV, occfacts_kpath,
+                             self.nelect, nspinor1, nspden1, linewidths=linewidths_kpath)
+
 
     def get_interpolation_mesh(self):
         """From the array of equivalences determine the mesh that was used"""
@@ -158,14 +223,17 @@ class AbipyBoltztrap():
                 for ie,equivalence in enumerate(self.equivalences):
                     coeff = self.coefficients[iband,ie]
                     for ip,point in enumerate(equivalence):
-                        f.write("%5d %5d %5d "%tuple(point)+"%lf\n"%((abs(coeff))**(1./5)))
+                        f.write("%5d %5d %5d "%tuple(point)+"%lf\n"%((abs(coeff))**(1./3)))
                 f.write("\n\n")
 
     @timeit
     def compute_equivalences(self):
         """Compute equivalent k-points"""
         from BoltzTraP2 import sphere
-        self._equivalences = sphere.get_equivalences(self.atoms, self.magmom, self.lpratio)
+        try:
+            self._equivalences = sphere.get_equivalences(self.atoms, self.magmom, self.lpratio)
+        except TypeError:
+            self._equivalences = sphere.get_equivalences(self.atoms, self.lpratio)
 
     @timeit
     def compute_coefficients(self):
@@ -186,7 +254,7 @@ class AbipyBoltztrap():
         delattr(self,"ebands")
 
     @timeit
-    def run(self,npts=500,dos_method='gaussian:0.1 eV',erange=None,verbose=True):
+    def run(self,npts=500,dos_method='gaussian:0.1 eV',erange=None,verbose=0):
         """
         Interpolate the eingenvalues This part is quite memory intensive
         """
@@ -199,17 +267,20 @@ class AbipyBoltztrap():
         if erange is None: erange = (np.min(self.eig),np.max(self.eig))
 
         #interpolate the electronic structure
+        if verbose: print('interpolating bands')
         results = fite.getBTPbands(self.equivalences, self.coefficients, 
                                    self.lattvec, nworkers=self.nworkers)
         eig_fine, vvband, cband = results
 
         #calculate DOS and VDOS without lifetimes
+        if verbose: print('calculating dos and vvdos')
         wmesh,dos,vvdos,_ = BL.BTPDOS(eig_fine, vvband, erange=erange, npts=npts, mode=dos_method) 
         app(BoltztrapResult(self,wmesh,dos,vvdos,self.fermi,self.tmesh,self.volume))
     
         #if we have linewidths
         if self.linewidths:
             for itemp in range(self.ntemps):
+                if verbose: print('itemp %d\ninterpolating bands')
                 #calculate the lifetimes on the fine grid
                 results = fite.getBTPbands(self.equivalences, self._linewidth_coefficients[itemp], 
                                            self.lattvec, nworkers=self.nworkers)
@@ -217,6 +288,7 @@ class AbipyBoltztrap():
                 tau_fine = 1.0/np.abs(2*linewidth_fine*eV_s)
  
                 #calculate vvdos with the lifetimes
+                if verbose: print('calculating dos and vvdos')
                 wmesh, dos_tau, vvdos_tau, _ = BL.BTPDOS(eig_fine, vvband, erange=erange, npts=npts,
                                                          scattering_model=tau_fine, mode=dos_method)
                 #store results
@@ -257,6 +329,10 @@ class BoltztrapResult():
 
         self.dos = dos
         self.vvdos = vvdos
+
+    @property
+    def has_tau(self):
+        return self.tau_temp is not None 
 
     @property
     def ntemp(self):
@@ -380,7 +456,7 @@ class BoltztrapResult():
                     y = self.get_component(what,component,itemp)
                     if len(itemp_list) > 1: color=cmap(itemp/len(itemp_list))
                     label = "%s %s $b_T$ = %dK"%(what,component,self.tmesh[itemp])
-                    if self.tau_temp: label += " $\\tau_T$ = %dK"%self.tau_temp
+                    if self.has_tau: label += " $\\tau_T$ = %dK"%self.tau_temp
                     ax1.plot(wmesh,y,label=label,c=color,**kwargs)
         else:
             ax1.plot(wmesh,getattr(self,what),label=what,**kwargs)
@@ -404,7 +480,7 @@ class BoltztrapResult():
         app("fermi:    %8.5lf"%self.fermi)
         app("wmesh:    %8.5lf <-> %8.5lf"%(self.wmesh[0],self.wmesh[-1]))
         app("tmesh:    %s"%self.tmesh)
-        app("has_tau:  %s"%(self.tau_temp is not None))
+        app("has_tau:  %s"%self.has_tau)
         if self.tau_temp: app("tau_temp: %lf"%self.tau_temp)
         return "\n".join(lines)
 
@@ -443,16 +519,24 @@ class BoltztrapResultRobot():
     
     @property
     def tau_list(self):
+        """Get all the results with tau included"""
         return [ res.tau_temp for res in self.results if res.tau_temp is not None ]
+
+    @property
+    def notau_results(self):
+        """Get all the results without the tau included"""
+        instance = self.__class__([ res for res in self.results if res.tau_temp is None ])
+        if self.erange: instance.erange = self.erange
+        return instance 
+
+    @property
+    def tau_results(self):
+        """ Return all the results that have temperature dependence"""
+        return self.__class__([ res for res in self.results if res.tau_temp is None ])
 
     @property
     def nresults(self):
         return len(self.results)
-
-    @property
-    def hastau(self):
-        """ Return all the results that have temperature dependence"""
-        return [result for result in self.results if result.has_tau]
 
     @staticmethod
     def from_pickle(filename):
@@ -470,17 +554,21 @@ class BoltztrapResultRobot():
         with open(filename,'wb') as f:
             pickle.dump(self,f)
  
-    def plot_ax(self,ax,what,components=['xx'],itemp_list=None,itau_list=None,erange=None,**kwargs):
+    def plot_ax(self,ax1,what,components=['xx'],itemp_list=None,itau_list=None,erange=None,**kwargs):
         """
         Plot a quantity in an axis for all the results
         """
         from matplotlib import pyplot as plt
         colormap = kwargs.pop('colormap','plasma')
         cmap = plt.get_cmap(colormap)
-
+ 
+        #set erange
+        erange = erange or self.erange
+        if erange is not None:
+            ax1.set_xlim(erange)
+       
         #get itau_list
         tau_temps = self.tau_list if itau_list is None else [ self.tau_list[itau] for itau in itau_list ]
-
         #filter results by temperature
         filtered_results = [res for res in self.results if res.tau_temp in tau_temps]
 
@@ -488,12 +576,13 @@ class BoltztrapResultRobot():
         for itemp,result in enumerate(filtered_results):
             if result.tau_temp not in tau_temps: continue
             color = kwargs.pop('c',cmap(itemp/len(filtered_results)))
-            result.plot_ax(ax,what,components,itemp_list,c=color,**kwargs)
+            result.plot_ax(ax1,what,components,itemp_list,c=color,**kwargs)
 
-        #set erange
-        erange = erange or self.erange
-        if erange is not None:
-            ax.set_xlim(erange)
+        #plot result without tau
+        filtered_results = [res for res in self.results if not res.has_tau]
+        if len(filtered_results): ax2 = ax1.twinx()
+        for result in filtered_results:
+            result.plot_ax(ax2,what,components,itemp_list,*kwargs)
 
     @add_fig_kwargs
     def plot(self,what,itemp_list=None,itau_list=None,components=['xx'],erange=None,**kwargs):
@@ -504,12 +593,14 @@ class BoltztrapResultRobot():
 
         fig = plt.figure()
         ax1 = fig.add_subplot(1,1,1)
-        self.plot_ax(ax1,what,components=components,itemp_list=itemp_list,itau_list=itau_list,erange=erange,**kwargs)
+        self.plot_ax(ax1,what,components=components,itemp_list=itemp_list,itau_list=itau_list,
+                     erange=erange,**kwargs)
         fig.legend()
         return fig
 
     @add_fig_kwargs
-    def plot_dos_vvdos(self,itemp_list=None,itau_list=None,components=['xx'],dos_color='C0',erange=None,**kwargs):
+    def plot_dos_vvdos(self,itemp_list=None,itau_list=None,components=['xx'],
+                       dos_color='C0',erange=None,**kwargs):
         """
         Plot the DOS and VVDOS for all the results
         """
@@ -517,7 +608,7 @@ class BoltztrapResultRobot():
 
         fig = plt.figure()
         ax1 = fig.add_subplot(1,1,1)
-        self.plot_ax(ax1,'dos',itau_list=[0],c=dos_color,erange=erange,**kwargs)
+        self.plot_ax(ax1,'dos',itau_list=None,c=dos_color,erange=erange,**kwargs)
         ax2 = ax1.twinx()
         self.plot_ax(ax2,'vvdos',itemp_list=itemp_list,itau_list=itau_list,erange=erange,**kwargs)
         fig.legend()
