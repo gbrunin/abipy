@@ -17,20 +17,9 @@ from abipy.core.structure import Structure
 import abipy.core.abinit_units as abu
 from pymatgen.symmetry.bandstructure import HighSymmKpath
 
-def timeit(method):
-    """
-    timeit decorator adapted from:
-    https://medium.com/pythonhive/python-decorator-to-measure-the-execution-time-of-methods-fa04cb6bb36d
-    sets the timing of the routine as an attribute of the class
-    """
-    def timed(self, *args, **kw):
-        ts = time.time()
-        result = method(self, *args, **kw)
-        te = time.time()
+from abipy.tools.plotting import add_fig_kwargs
+from abipy.tools.decorators import timeit
 
-        setattr(self,"time_"+method.__name__, (te - ts) * 1000)
-        return result
-    return timed
 
 def xyz_comp(component):
     """
@@ -94,12 +83,12 @@ class AbipyBoltztrap():
 
     @property
     def nequivalences(self):
-        return len(self.equivalences)   
+        return len(self.equivalences)
 
     @property
     def ncoefficients(self):
         return len(self.coefficients)
-    
+
     @property
     def ntemps(self):
         return len(self.linewidths)
@@ -265,6 +254,7 @@ class AbipyBoltztrap():
 
         #TODO change this!
         if erange is None: erange = (np.min(self.eig),np.max(self.eig))
+        else: erange = np.array(erange)/abu.Ha_eV+self.fermi
 
         #interpolate the electronic structure
         if verbose: print('interpolating bands')
@@ -282,11 +272,11 @@ class AbipyBoltztrap():
             for itemp in range(self.ntemps):
                 if verbose: print('itemp %d\ninterpolating bands')
                 #calculate the lifetimes on the fine grid
-                results = fite.getBTPbands(self.equivalences, self._linewidth_coefficients[itemp], 
+                results = fite.getBTPbands(self.equivalences, self._linewidth_coefficients[itemp],
                                            self.lattvec, nworkers=self.nworkers)
                 linewidth_fine, vvband, cband = results
                 tau_fine = 1.0/np.abs(2*linewidth_fine*eV_s)
- 
+
                 #calculate vvdos with the lifetimes
                 if verbose: print('calculating dos and vvdos')
                 wmesh, dos_tau, vvdos_tau, _ = BL.BTPDOS(eig_fine, vvband, erange=erange, npts=npts,
@@ -308,15 +298,16 @@ class AbipyBoltztrap():
 class BoltztrapResult():
     """
     Container for BoltztraP2 results
-    Provides a object oriented interface to BoltztraP2 for plotting, 
+    Provides a object oriented interface to BoltztraP2 for plotting,
     storing and analysing the results
     """
-    def __init__(self,abipyboltztrap,wmesh,dos,vvdos,fermi,tmesh,volume,tau_temp=None):
+    def __init__(self,abipyboltztrap,wmesh,dos,vvdos,fermi,tmesh,volume,tau_temp=None,margin=10):
         self.abipyboltztrap = abipyboltztrap
 
         self.fermi  = fermi
         self.volume = volume
         self.wmesh  = np.array(wmesh)
+        self.mumesh = self.wmesh[margin:-(margin+1)]
         self.tmesh  = np.array(tmesh)
 
         #Temperature fix
@@ -343,7 +334,7 @@ class BoltztrapResult():
         if not hasattr(self,'_L0'):
             self.compute_fermiintegrals()
         return self._L0
- 
+
     @property
     def L1(self):
         if not hasattr(self,'_L1'):
@@ -355,13 +346,13 @@ class BoltztrapResult():
         if not hasattr(self,'_L2'):
             self.compute_fermiintegrals()
         return self._L2
- 
+
     @property
     def sigma(self):
         if not hasattr(self,'_sigma'):
             self.compute_onsager_coefficients()
         return self._sigma
- 
+
     @property
     def seebeck(self):
         if not hasattr(self,'_seebeck'):
@@ -371,7 +362,7 @@ class BoltztrapResult():
     @property
     def powerfactor(self):
         return self.sigma * self.seebeck**2
-     
+
     @property
     def kappa(self):
         if not hasattr(self,'_kappa'):
@@ -383,16 +374,16 @@ class BoltztrapResult():
         self.tmesh = tmesh
 
     def compute_fermiintegrals(self):
-        """Compute and store the results of the Fermi integrals""" 
+        """Compute and store the results of the Fermi integrals"""
         import BoltzTraP2.bandlib as BL
-        results = BL.fermiintegrals(self.wmesh, self.dos, self.vvdos, mur=self.wmesh, Tr=self.tmesh)
+        results = BL.fermiintegrals(self.wmesh, self.dos, self.vvdos, mur=self.mumesh, Tr=self.tmesh)
         _, self._L0, self._L1, self._L2, self._Lm11 = results
 
     def compute_onsager_coefficients(self):
         """Compute Onsager coefficients"""
         import BoltzTraP2.bandlib as BL
         L0,L1,L2 = self.L0,self.L1,self.L2
-        results = BL.calc_Onsager_coefficients(L0,L1,L2,self.wmesh,self.tmesh,self.volume)
+        results = BL.calc_Onsager_coefficients(L0,L1,L2,mur=self.mumesh,Tr=self.tmesh,vuc=self.volume)
         self._sigma, self._seebeck, self._kappa, self._hall = results
 
     @staticmethod
@@ -401,7 +392,7 @@ class BoltztrapResult():
         with open(filename,'rb') as f:
             instance = pickle.load(f)
         return instance
- 
+
     def pickle(self,filename):
         """Write a file with the results from the calculation"""
         with open(filename,'wb') as f:
@@ -428,7 +419,7 @@ class BoltztrapResult():
 
         for component in components:
             i,j = xyz_comp(component)
-            label = "vvdos %s"%component
+            label = "VVDOS %s"%component
             if self.tau_temp: label += " $\\tau_T$ = %dK"%self.tau_temp
             ax1.plot(wmesh,self.vvdos[i,j,:],label=label,**kwargs)
         ax1.set_xlabel('Energy (eV)')
@@ -447,7 +438,7 @@ class BoltztrapResult():
 
         cmap = plt.get_cmap(colormap)
         color = None
-        wmesh = (self.wmesh-self.fermi) * abu.Ha_eV
+        mumesh = (self.mumesh-self.fermi) * abu.Ha_eV
 
         if self.istensor(what):
             kwargs.pop('c',None)
@@ -457,9 +448,9 @@ class BoltztrapResult():
                     if len(itemp_list) > 1: color=cmap(itemp/len(itemp_list))
                     label = "%s %s $b_T$ = %dK"%(what,component,self.tmesh[itemp])
                     if self.has_tau: label += " $\\tau_T$ = %dK"%self.tau_temp
-                    ax1.plot(wmesh,y,label=label,c=color,**kwargs)
+                    ax1.plot(mumesh,y,label=label,c=color,**kwargs)
         else:
-            ax1.plot(wmesh,getattr(self,what),label=what,**kwargs)
+            ax1.plot(mumesh,getattr(self,what),label=what,**kwargs)
         ax1.set_xlabel('Energy (eV)')
 
     @add_fig_kwargs
@@ -478,7 +469,7 @@ class BoltztrapResult():
         lines = []; app = lines.append
         if title is None: app(marquee(self.__class__.__name__,mark=mark))
         app("fermi:    %8.5lf"%self.fermi)
-        app("wmesh:    %8.5lf <-> %8.5lf"%(self.wmesh[0],self.wmesh[-1]))
+        app("mumesh:    %8.5lf <-> %8.5lf"%(self.mumesh[0],self.mumesh[-1]))
         app("tmesh:    %s"%self.tmesh)
         app("has_tau:  %s"%self.has_tau)
         if self.tau_temp: app("tau_temp: %lf"%self.tau_temp)
@@ -561,11 +552,12 @@ class BoltztrapResultRobot():
         from matplotlib import pyplot as plt
         colormap = kwargs.pop('colormap','plasma')
         cmap = plt.get_cmap(colormap)
- 
+
+        if what == "dos": self.plot_dos_ax(self)
+
         #set erange
         erange = erange or self.erange
-        if erange is not None:
-            ax1.set_xlim(erange)
+        if erange is not None: ax1.set_xlim(erange)
        
         #get itau_list
         tau_temps = self.tau_list if itau_list is None else [ self.tau_list[itau] for itau in itau_list ]
@@ -595,12 +587,12 @@ class BoltztrapResultRobot():
         ax1 = fig.add_subplot(1,1,1)
         self.plot_ax(ax1,what,components=components,itemp_list=itemp_list,itau_list=itau_list,
                      erange=erange,**kwargs)
-        fig.legend()
+        fig.legend(prop={'size': 6})
         return fig
 
     @add_fig_kwargs
-    def plot_dos_vvdos(self,itemp_list=None,itau_list=None,components=['xx'],
-                       dos_color='C0',erange=None,**kwargs):
+    def plot_dos_vvdos(self,itemp_list=None,itau_list=None,which_dos=[0],components=['xx'],
+                       dos_color=None,erange=None,**kwargs):
         """
         Plot the DOS and VVDOS for all the results
         """
@@ -608,16 +600,16 @@ class BoltztrapResultRobot():
 
         fig = plt.figure()
         ax1 = fig.add_subplot(1,1,1)
-        self.plot_ax(ax1,'dos',itau_list=None,c=dos_color,erange=erange,**kwargs)
+        for iresult in which_dos:
+            self[iresult].plot_dos_ax(ax1,c=dos_color,**kwargs)
         ax2 = ax1.twinx()
         self.plot_ax(ax2,'vvdos',itemp_list=itemp_list,itau_list=itau_list,erange=erange,**kwargs)
-        fig.legend()
+        fig.legend(prop={'size': 6})
         return fig
 
-    def set_erange(self,margin):
+    def set_erange(self,erange):
         """ Get an energy range based on an energy margin above and bellow the fermi level"""
-        self.erange = [-margin,+margin]
-        return self.erange
+        self.erange = erange
 
     def unset_erange(self):
         """ Unset the energy range"""
