@@ -1597,24 +1597,32 @@ class Becs(Has_Structure):
         """Integration with jupyter notebooks."""
         return self.get_voigt_dataframe()._repr_html_()
 
-    def get_voigt_dataframe(self, tol=1e-3, select_symbols=None):
+    def get_voigt_dataframe(self, view="inequivalent", tol=1e-3, select_symbols=None, verbose=0):
         """
         Return |pandas-DataFrame| with Voigt indices as columns and natom rows.
 
         Args:
+            view: "inequivalent" to show only inequivalent atoms. "all" for all sites.
             tol: Entries are set to zero below this value
             select_symbols: String or list of strings with chemical symbols.
                 Used to select only atoms of this type.
+            verbose: Verbosity level.
         """
         select_symbols = set(list_strings(select_symbols)) if select_symbols is not None else None
 
+        aview = self._get_atomview(view, verbose=verbose)
+
         columns = ["xx", "yy", "zz", "yz", "xz", "xy"]
         rows = []
-        for isite, (site, zstar) in enumerate(zip(self.structure, self.zstars)):
+        #for isite, (site, zstar) in enumerate(zip(self.structure, self.zstars)):
+        for (isite, wyck) in zip(aview.iatom_list, aview.wyckoffs):
+            site = self.structure[iatom]
             if select_symbols is not None and site.specie.symbol not in select_symbols: continue
+            zstar = self.zstars[iatom]
             d = OrderedDict()
             d["element"] = site.specie.symbol
             d["site_index"] = isite
+            if view == "inequivalent": d["wyckoff"] = wyck
             d["frac_coords"] = site.frac_coords
             zstar = zstar.zeroed(tol=tol)
             for k, v in zip(columns, zstar.voigt):
@@ -1781,10 +1789,10 @@ class DielectricTensorGenerator(Has_Structure):
         else:
             gammas = np.ones(len(self.phfreqs)) * float(gamma_ev)
 
-        t = np.zeros((3, 3))
+        t = np.zeros((3, 3),dtype=complex)
         for i in range(3, len(self.phfreqs)):
             g =  gammas[i] * self.phfreqs[i]
-            t += (self.oscillator_strength[i].real / (self.phfreqs[i]**2 - w**2 - 1j*g)).real
+            t += self.oscillator_strength[i].real / (self.phfreqs[i]**2 - w**2 - 1j*g)
 
         vol = self.structure.volume / bohr_to_angstrom ** 3
         t = 4 * np.pi * t / vol / eV_to_Ha**2
@@ -1801,14 +1809,14 @@ class DielectricTensorGenerator(Has_Structure):
         return DielectricTensor(t)
 
     @add_fig_kwargs
-    def plot(self, w_min=0, w_max=None, gamma_ev=1e-4, num=100, component='diag', units='eV',
+    def plot(self, w_min=0, w_max=None, gamma_ev=1e-4, num=500, component='diag', reim="reim",  units='eV',
              with_phfreqs=True, ax=None, fontsize=12, **kwargs):
         """
         Plots the selected components of the dielectric tensor as a function of frequency.
 
         Args:
             w_min: minimum frequency in units `units`.
-            w_max: maximum frequency. If None it will be set to the value of the maximum frequency * 4.
+            w_max: maximum frequency. If None it will be set to the value of the maximum frequency + 5*gamma_ev.
             gamma_ev: Phonon damping factor in eV (full width). Poles are shifted by phfreq * gamma_ev.
                 Accept scalar or [nfreq] array.
             num: number of values of the frequencies between w_min and w_max.
@@ -1819,6 +1827,7 @@ class DielectricTensorGenerator(Has_Structure):
                 * 'all' to plot all the components
                 * 'diag_av' to plot the average of the components on the diagonal
 
+            reim: a string with "re" will plot the real part, with "im" the imaginary part.
             units: string specifying the units used for phonon frequencies. Possible values in
                 ("eV", "meV", "Ha", "cm-1", "Thz"). Case-insensitive.
             with_phfreqs: True to show phonon frequencies with dots.
@@ -1828,11 +1837,11 @@ class DielectricTensorGenerator(Has_Structure):
         Return: |matplotlib-Figure|
         """
         if w_max is None:
-            w_max = np.max(self.phfreqs) * 4 * phfactor_ev2units(units)
+            w_max = np.max(self.phfreqs) * phfactor_ev2units(units) + gamma_ev*10
 
         w_range = np.linspace(w_min, w_max, num, endpoint=True)
 
-        t = np.zeros((num, 3, 3))
+        t = np.zeros((num, 3, 3),dtype=complex)
         for i, w in enumerate(w_range):
             t[i] = self.tensor_at_frequency(w, units=units, gamma_ev=gamma_ev)
 
@@ -1842,27 +1851,36 @@ class DielectricTensorGenerator(Has_Structure):
             kwargs['linewidth'] = 2
 
         ax.set_xlabel('Frequency {}'.format(phunit_tag(units)))
-        ax.set_ylabel(r'$\varepsilon_{1}(\omega)$')
+        #ax.set_ylabel(r'$\varepsilon_{1}(\omega)$')
+        ax.set_ylabel(r'$\epsilon_{1}(\omega)$')
         ax.grid(True)
 
-        if isinstance(component, (list, tuple)):
-            ax.plot(w_range, t[:,component[0], component[1]], label='[{},{}]'.format(*component), **kwargs)
-        elif component == 'diag':
-            for i in range(3):
-                ax.plot(w_range, t[:, i, i], label='[{},{}]'.format(i,i), **kwargs)
-        elif component == 'all':
-            for i in range(3):
-                for j in range(3):
-                    ax.plot(w_range, t[:, i, j], label='[{},{}]'.format(i, j), **kwargs)
-        elif component == 'diag_av':
-            for i in range(3):
-                ax.plot(w_range, np.trace(t, axis1=1, axis2=2)/3, label='[{},{}]'.format(i, i), **kwargs)
-        else:
-            raise ValueError('Unkwnown component {}'.format(component))
+        reimfs = []
+        if 're' in reim: reimfs.append((np.real, "Re{%s}"))
+        if 'im' in reim: reimfs.append((np.imag, "Im{%s}"))
+
+        for reimf,reims in reimfs:
+            if isinstance(component, (list, tuple)):
+                label = reims % r'$\epsilon_{%d%d}$' % tuple(component)
+                ax.plot(w_range, reimf(t[:,component[0], component[1]]), label=label, **kwargs)
+            elif component == 'diag':
+                for i in range(3):
+                    label = reims % r'$\epsilon_{%d%d}$' % (i,i)
+                    ax.plot(w_range, reimf(t[:, i, i]), label=label, **kwargs)
+            elif component == 'all':
+                for i in range(3):
+                    for j in range(3):
+                        label = reim % r'$\epsilon_{%d%d}$' % (i,j)
+                        ax.plot(w_range, reimf(t[:, i, j]), label=label, **kwargs)
+            elif component == 'diag_av':
+                for i in range(3):
+                    ax.plot(w_range, np.trace(reimf(t), axis1=1, axis2=2)/3, label=r'$\chi_{%d,%d}$' % (i, i), **kwargs)
+            else:
+                raise ValueError('Unkwnown component {}'.format(component))
 
         # Add points showing phonon energies.
         if with_phfreqs:
-            wvals = self.phfreqs * phfactor_ev2units(units)
+            wvals = self.phfreqs[3:] * phfactor_ev2units(units)
             ax.scatter(wvals, np.zeros_like(wvals), s=30, marker="o", c="blue")
 
         ax.legend(loc="best", fontsize=fontsize, shadow=True)
