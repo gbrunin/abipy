@@ -10,7 +10,11 @@ Warning:
 """
 import pickle
 import numpy as np
+import pandas as pd
 import abipy.core.abinit_units as abu
+from itertools import product
+from collections import OrderedDict
+
 from monty.string import marquee
 from monty.termcolor import cprint
 from monty.dev import deprecated
@@ -250,10 +254,13 @@ class AbipyBoltztrap():
     def compute_equivalences(self):
         """Compute equivalent k-points"""
         from BoltzTraP2 import sphere
+        if duck.is_listlike(self.lpratio): nkpt = self.lpratio
+        else: nkpt = self.lpratio*self.nkpoints
         try:
-            self._equivalences = sphere.get_equivalences(self.atoms, self.magmom, self.lpratio*self.nkpoints)
+            self._equivalences = sphere.get_equivalences(self.atoms, self.magmom, nkpt)
         except TypeError:
-            self._equivalences = sphere.get_equivalences(self.atoms, self.lpratio*self.nkpoints)
+            self._equivalences = sphere.get_equivalences(self.atoms, nkpt)
+
 
     @timeit
     def compute_coefficients(self):
@@ -293,11 +300,33 @@ class AbipyBoltztrap():
             This is a small wrapper for Boltztrap2 to use the official version or a modified
             verison using gaussian or lorentzian smearing
             """
-            try:
-                return BL.BTPDOS(eband, vvband, erange=erange, npts=npts, scattering_model=scattering_model, mode=dos_method)
-            except TypeError:
-                return BL.BTPDOS(eband, vvband, erange=erange, npts=npts, scattering_model=scattering_model)
+            temp = None
+            #in case of histogram mode we read the smearing here
+            if "histogram" in mode:
+                i = mode.find(":")
+                if i != -1:
+                    value, eunit = mode[i+1:].split()
+                    if eunit == "eV": temp = float(value)*abu.eV_to_K
+                    elif eunit == "Ha": temp = float(value)*abu.Ha_to_K
+                    elif eunit == "K": temp = float(value)
+                    else: raise ValueError('Unknown unit %s'%eunit)
+                    mode = mode.split(':')[0]
 
+            try:
+                wmesh, dos_tau, vvdos_tau, _ = BL.BTPDOS(eband, vvband, erange=erange, npts=npts,
+                                                         scattering_model=scattering_model, mode=dos_method)
+            except TypeError:
+                if 'histogram' not in mode:
+                    print('Could not pass \'dos_method=%s\' argument to Bolztrap2. '
+                          'Falling back to histogram method'%dos_method)
+                wmesh, dos_tau, vvdos_tau, _ = BL.BTPDOS(eband, vvband, erange=erange, npts=npts, scattering_model=scattering_model)
+
+            if 'histogram' in mode and temp:
+                dos_tau = BL.smoothen_DOS(wmesh,dos_tau,temp)
+                for i,j in product(range(3),repeat=2):
+                    vvdos_tau[i,j] = BL.smoothen_DOS(wmesh,vvdos_tau[i,j],temp)
+
+            return wmesh, dos_tau, vvdos_tau
 
         #TODO change this!
         if erange is None: erange = (np.min(self.eig),np.max(self.eig))
@@ -311,8 +340,8 @@ class AbipyBoltztrap():
 
         #calculate DOS and VDOS without lifetimes
         if verbose: print('calculating dos and vvdos without lifetimes')
-        wmesh,dos,vvdos,_ = BTPDOS(eig_fine, vvband, erange=erange, npts=npts, mode=dos_method)
-        app(BoltztrapResult(self,wmesh,dos,vvdos,self.fermi,self.tmesh,self.volume,margin=margin))
+        wmesh,dos,vvdos = BTPDOS(eig_fine, vvband, erange=erange, npts=npts, mode=dos_method)
+        app(BoltztrapResult(wmesh,dos,vvdos,self.fermi,self.tmesh,self.volume,margin=margin))
 
         #if we have linewidths
         if self.linewidths:
@@ -326,10 +355,10 @@ class AbipyBoltztrap():
 
                 #calculate vvdos with the lifetimes
                 if verbose: print('calculating dos and vvdos with lifetimes')
-                wmesh, dos_tau, vvdos_tau, _ = BTPDOS(eig_fine, vvband, erange=erange, npts=npts,
+                wmesh, dos_tau, vvdos_tau = BTPDOS(eig_fine, vvband, erange=erange, npts=npts,
                                                       scattering_model=tau_fine, mode=dos_method)
                 #store results
-                app(BoltztrapResult(self,wmesh,dos_tau,vvdos_tau,self.fermi,self.tmesh,
+                app(BoltztrapResult(wmesh,dos_tau,vvdos_tau,self.fermi,self.tmesh,
                                     self.volume,tau_temp=self.tmesh[itemp],margin=margin))
 
         return BoltztrapResultRobot(boltztrap_results)
@@ -353,9 +382,9 @@ class BoltztrapResult():
     for plotting, storing and analysing the results
     """
     _attrs = ['_L0','_L1','_L2','_sigma','_seebeck','_kappa']
+    _properties = ['sigma','seebeck','kappa','powerfactor','L0','L1','L2']
 
-    def __init__(self,abipyboltztrap,wmesh,dos,vvdos,fermi,tmesh,volume,tau_temp=None,margin=0.1):
-        self.abipyboltztrap = abipyboltztrap
+    def __init__(self,wmesh,dos,vvdos,fermi,tmesh,volume,tau_temp=None,nsppol=1,margin=0.1):
 
         self.fermi  = fermi
         self.volume = volume
@@ -363,6 +392,7 @@ class BoltztrapResult():
         idx_margin = int(margin*len(wmesh))
         self.mumesh = self.wmesh[idx_margin:-(idx_margin+1)]
         self.tmesh  = np.array(tmesh)
+        self.nsppol = nsppol
 
         #Temperature fix
         if any(self.tmesh < 1):
@@ -374,6 +404,38 @@ class BoltztrapResult():
 
         self.dos = dos
         self.vvdos = vvdos
+
+    @classmethod
+    def from_evk(cls,filename,tmesh):
+        """
+        Initialize the class from an EVK file containing the dos and vvdos computed by abinit
+        """
+        from abipy.electrons.ddk import EvkReader
+        reader = EvkReader(filename)
+        wmesh, dos, idos = reader.read_dos()
+        wmesh, vvdos, ivvdos = reader.read_vvdos()
+
+        ebands = reader.read_ebands()
+        fermi = ebands.fermie*abu.eV_Ha
+        nsppol = ebands.nsppol
+        volume = ebands.structure.volume*abu.Ang_Bohr**3
+
+        #todo spin
+        dos = dos[0]
+        vvdos = vvdos[:,:,0]
+        return cls(wmesh,dos,vvdos,fermi,tmesh,volume,tau_temp=None,nsppol=1,margin=0.1)
+
+    @property
+    def minw(self):
+        return np.min(self.wmesh)
+
+    @property
+    def maxw(self):
+        return np.max(self.wmesh)
+
+    @property
+    def spin_degen(self):
+        return {1:2,2:1}[self.nsppol]
 
     @property
     def has_tau(self):
@@ -427,26 +489,71 @@ class BoltztrapResult():
         """ Set the temperature mesh"""
         self.tmesh = tmesh
 
-    def set_tmesh(self,tmesh):
-        """ Set the temperature mesh"""
-        self.tmesh = tmesh
-
     def del_attrs(self):
-        """ Remove all the atributes so they are recomputed """
+        """ Remove all the atributes so they are recomputed when requested """
         for attr in self._attrs:
-            delattr(attr)
+            if hasattr(self,attr): delattr(self,attr)
 
-    def set_mumesh(self,emin,emax):
+    def set_tmesh(self,tmesh):
         """
-        Set the range in which to plot the change of the doping
+        Set the temperature mesh in K
 
         Args:
-            emin: minimun energy in eV
-            emax: maximum energy in eV
+            tmesh: a list of temperatures in K
         """
-        start_idx = np.abs(self.wmesh - emin*abu.eV_Ha - self.fermi).argmin()
-        stop_idx  = np.abs(self.wmesh - emax*abu.eV_Ha - self.fermi).argmin()
-        self.mumesh = self.wmesh[start_idx:stop_idx]
+        self.tmesh = tmesh
+        self.del_attrs()
+
+    def set_nmesh(self,nmesh,refine=False):
+        """
+        Set the mumesh using a list of carrier concentrations n
+
+        Args:
+            carriermesh: a list of carrier concentrarions in units of electrons/cm^3
+        """
+        nelectronsmesh = []
+        for n in carriermesh:
+            # (n e)/cm^3 -> 1e-24 * (n e)/A^3
+            # n: carrier concentration
+            # electron: e
+            nelectrons =  1e-24 * n * self.volume
+            nelectronsmesh.append(nelectrons)
+        self.set_nelectronmesh(nelectronsmesh,refine=refine)
+
+    def set_nelectronsmesh(self,nelectronsmesh,refine=False):
+        """
+        Set the mumesh mesh by specfying a list of the number of electrons in the system
+
+        Args:
+            nelectronsmesh: a list of number of electrons to compute mu with
+        """
+        mumesh = []
+        for nelectrons in nelectronsmesh:
+            mu = self.compute_fermi(nelectrons,self.tmesh,refine=refine)
+            mumesh.append(mu)
+        self.set_mumesh(mumesh)
+
+    def set_mumesh(self,mumesh):
+        """
+        Set a list of mu at which to compute the transport properties
+
+        Args:
+            mumesh: an array with the list of fermi energies (in eV) at which the transport quantities should be computed
+        """
+        mumesh = np.array(mumesh) * abu.eV_Ha + self.fermi
+        if not duck.is_listlike(mumesh): raise ValueError('The input mumesh must be a list')
+        min_mumesh = np.min(mumesh)
+        max_mumesh = np.max(mumesh)
+        if min_mumesh < self.minw: raise ValueError('The minimum of the input mu mesh is lower than the energies mesh in DOS')
+        if max_mumesh > self.maxw: raise ValueError('The maximum of the input mu mesh is higher than the energies mesh in DOS')
+        self.mumesh = mumesh
+        self.del_attrs()
+
+    def compute_fermi(self,nelectrons,temperature,refine=False):
+        """ Compute the fermi energy given the number of electrons and temperature of the system """
+        import BoltzTraP2.bandlib as BL
+        dosweights = self.spin_degen()
+        return BL.solve_for_mu(self.wmesh,self.dos,nelectrons,T=temperature,refine=refine)
 
     def compute_fermiintegrals(self):
         """Compute and store the results of the Fermi integrals"""
@@ -469,14 +576,48 @@ class BoltztrapResult():
         return instance
 
     def pickle(self,filename):
-        """Write a file with the results from the calculation"""
+        """ Write a file with the results from the calculation """
         with open(filename,'wb') as f:
             pickle.dump(self,f)
 
     def istensor(self,what):
-        """Check if a certain quantity is a tensor"""
+        """ Check if a certain quantity is a tensor """
         if not hasattr(self,what): return None
         return len(getattr(self,what).shape) > 2
+
+    def deepcopy(self):
+        """ Return a copy of this class """
+        import copy
+        return copy.deepcopy(self)
+
+    def get_dataframe(self,components=('xx',),index=None):
+        """
+        Get a pandas dataframe with the results
+
+        Args:
+            mumesh: Set a certain mumesh before returning the dataframe
+            tmesh:
+        """
+        records = []
+        for component in components:
+            for itemp,temp in enumerate(self.tmesh):
+                for imu,mu in enumerate(self.mumesh):
+                    od = OrderedDict()
+                    od['T'] = temp
+                    od['mu'] = mu
+                    od['component'] = component
+                    for what in self._properties:
+                        ylist = self.get_component(what,component,itemp)
+                        od[what] = ylist[imu]
+                    records.append(od)
+        return pd.DataFrame.from_records(records, index=index)
+
+    def get_dataframe_fermi(self,index=None):
+        """ Get dataframe for a single mu that corresponds to the Fermi energy
+        """
+        btr = self.deepcopy()
+        btr.set_mumesh([self.fermi])
+        return btr.get_dataframe(index=index)
 
     def get_component(self,what,component,itemp):
         i,j = abu.s2itup(component)
@@ -528,6 +669,12 @@ class BoltztrapResult():
         colormap = kwargs.pop('colormap','plasma')
         cmap = plt.get_cmap(colormap)
         color = None
+        if what == 'dos':
+            self.plot_dos_ax(ax,**kwargs)
+            return
+        if what == 'vvdos':
+            self.plot_vvdos_ax(ax,components=components,**kwargs)
+            return
 
         itemp_list = list(range(self.ntemp)) if itemp_list is None else duck.list_ints(itemp_list)
         maxitemp = max(itemp_list)
@@ -538,11 +685,11 @@ class BoltztrapResult():
         mumesh = (self.mumesh-self.fermi) * abu.Ha_eV
 
         if self.istensor(what):
-            kwargs.pop('c',None)
+            color = kwargs.pop('c',None)
             for itemp in itemp_list:
                 for component in components:
                     y = self.get_component(what,component,itemp)
-                    if len(itemp_list) > 1: color=cmap(itemp/len(itemp_list))
+                    if ((len(itemp_list) > 1) and color == None): color=cmap(itemp/len(itemp_list))
                     label = "%s $_{%s}$ $b_T$ = %dK" % (self.get_letter(what),component,self.tmesh[itemp])
                     if self.has_tau: label += r" $\tau_T$ = %dK" % self.tau_temp
                     ax.plot(mumesh,y,label=label,c=color,**kwargs)
@@ -832,6 +979,24 @@ class BoltztrapResultRobot():
         """ Unset the energy range"""
         self.erange = None
 
+    def get_dataframe(self,index=None):
+        """
+        Get a pandas dataframe from all the results in this Robot
+        """
+        df_list = []; app = df_list.append
+        for result in self.results:
+            app(result.get_dataframe(index=index))
+        return pd.concat(df_list)
+
+    def get_dataframe_fermi(self,index=None):
+        """
+        Get a pandas dataframe from all the results in this Robot at the Fermi energy
+        """
+        df_list = []; app = df_list.append
+        for result in self.results:
+            app(result.get_dataframe_fermi(index=index))
+        return pd.concat(df_list)
+
     def to_string(self, verbose=0):
         """
         Return a string representation of the data in this class
@@ -843,17 +1008,16 @@ class BoltztrapResultRobot():
             app(result.to_string(mark='-'))
         return "\n".join(lines)
 
-    def set_mumesh(self,emin,emax):
+    def set_mumesh(self,mumesh):
         """
         Set the range in which to plot the change of the doping
         for all the results
 
         Args:
-            emin: minimun energy in eV
-            emax: maximum energy in eV
+            mumesh: an array with the list of fermi energies (in eV) at which the transport quantities should be computed
         """
         for result in self.results:
-            result.set_mumesh(emin,emax)
+            result.set_mumesh(mumesh)
 
     def set_tmesh(self,tmesh):
         """
