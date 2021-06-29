@@ -4,7 +4,7 @@
 import panel as pn
 #import panel.widgets as pnw
 import bokeh.models.widgets as bkw
-from abipy.panels.core import AbipyParameterized, mpl, ply, dfc #, ButtonContext
+from abipy.panels.core import AbipyParameterized, mpl, ply, dfc
 
 
 class AbinitOutputFilePanel(AbipyParameterized):
@@ -37,7 +37,7 @@ class AbinitOutputFilePanel(AbipyParameterized):
 
         return box
 
-    def get_panel(self, as_dict=True, **kwargs):
+    def get_panel(self, as_dict=False, **kwargs):
         """Return tabs with widgets to interact with the Abinit output file."""
         d = {}
 

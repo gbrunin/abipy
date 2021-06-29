@@ -30,7 +30,7 @@ def abipanel():
 
     extensions = [
         "plotly",
-        #"mathjax",
+        "mathjax",
         #"katex",
     ]
 
@@ -77,7 +77,7 @@ def get_template_cls_from_name(name):
     if hasattr(pn.template, name):
         return getattr(pn.template, name)
 
-    try_name =  name + "Template"
+    try_name = name + "Template"
     if hasattr(pn.template, try_name):
         return getattr(pn.template, try_name)
 
@@ -85,7 +85,6 @@ def get_template_cls_from_name(name):
 Don't know how to return panel template from string: {name}
 Possible templates are: {list(pn.template.__dict__.keys())}
 """)
-
 
 
 def depends_on_btn_click(btn_name):
@@ -190,9 +189,11 @@ If everything is properly configured, a new window is automatically created in y
 """)
 
         btn = pnw.Button(name="Upload to chart studio server")
+
         def push_to_cs(event):
             with ButtonContext(btn):
                 push_to_chart_studio(fig)
+
         btn.on_click(push_to_cs)
 
         if with_help:
@@ -397,7 +398,6 @@ class AbipyParameterized(param.Parameterized):
 Please **refresh** the page using the refresh button of the browser if plotly figures are not shown.
 """)
 
-
     #def __repr__(self):
     #    # https://github.com/holoviz/param/issues/396
     #    return f"AbiPyParametrized(name='{self.name}')"
@@ -472,6 +472,31 @@ Please **refresh** the page using the refresh button of the browser if plotly fi
         return pn.Column("## Software stack:", dfc(software_stack(as_dataframe=True), with_export_btn=True),
                          sizing_mode="scale_width")
 
+    @staticmethod
+    def get_fileinput_section(file_input):
+
+        css_style = """
+        <style>
+        .pnx-file-upload-area input[type=file] {
+            width: 100%;
+            height: 100%;
+            border: 3px dashed #9E9E9E;
+            background: transparent;
+            border-radius: 5px;
+            text-align: left;
+            margin: auto;
+        }
+        </style>"""
+
+        return pn.Column(
+            pn.pane.HTML(css_style, width=0, height=0, sizing_mode="stretch_width", margin=0),
+            file_input, sizing_mode="stretch_width"
+        )
+
+    @staticmethod
+    def get_template_cls_from_name(template):
+        return get_template_cls_from_name(template)
+
     def get_template_from_tabs(self, tabs, template):
         """
         This method receives panel Tabs, include them in a template and return the panel template.
@@ -515,7 +540,6 @@ class HasStructureParams(AbipyParameterized):
     structure_viewer = param.ObjectSelector(default=None,
                                             objects=[None, "jsmol", "vesta", "xcrysden", "vtk", "crystalk", "ngl",
                                                      "matplotlib", "plotly", "ase_atoms", "mayavi"])
-
 
     #def __init__(self, **params):
     #    self.struct_view_btn = pnw.Button(name="View structure", button_type='primary')
@@ -639,7 +663,7 @@ def get_structure_info(structure):
     df_len = pd.DataFrame(rows, index=["Å", "Bohr"]).transpose().rename_axis("Lattice lenghts")
 
     # Build dataframe with lattice angles.
-    rows = []; keys =  ("alpha", "beta", "gamma")
+    rows = []; keys = ("alpha", "beta", "gamma")
     rows.append({k: d[k] for k in keys})
     rows.append({k: np.radians(d[k]) for k in keys})
     df_ang = pd.DataFrame(rows, index=["Degrees", "Radians"]).transpose().rename_axis("Lattice angles")
@@ -713,7 +737,7 @@ class PanelWithElectronBands(AbipyParameterized):
     # e-DOS plot.
     edos_method = param.ObjectSelector(default="gaussian", objects=["gaussian", "tetra"], doc="e-DOS method")
     edos_step_ev = param.Number(0.1, bounds=(1e-6, None), step=0.1, doc='e-DOS step in eV')
-    edos_width_ev = param.Number(0.2, step=0.05, bounds=(1e-6, None), doc='e-DOS Gaussian broadening in eV' )
+    edos_width_ev = param.Number(0.2, step=0.05, bounds=(1e-6, None), doc='e-DOS Gaussian broadening in eV')
 
     # SKW interpolation of the KS band energies.
     skw_lpratio = param.Integer(5, bounds=(1, None))
@@ -1029,3 +1053,31 @@ def jsmol_html(structure, width=700, height=700, color="black", spin="false"):
 
     #print(html)
     return pn.Column(pn.pane.HTML(html, sizing_mode="stretch_width"), sizing_mode="stretch_width")
+
+
+# All credits to
+# https://github.com/MarcSkovMadsen/awesome-panel/blob/master/application/pages/styling/fileinput_area.py
+
+#def
+#    """Returns the File Input Area App"""
+#
+#    STYLE = """
+#    <style>
+#    .pnx-file-upload-area input[type=file] {
+#        width: 100%;
+#        height: 100%;
+#        border: 3px dashed #9E9E9E;
+#        background: transparent;
+#        border-radius: 5px;
+#        text-align: left;
+#        margin: auto;
+#    }
+#    </style>"""
+#
+#    #pn.config.sizing_mode = "stretch_width"
+#    fileinput_section = pn.Column(
+#        pn.pane.HTML(STYLE, width=0, height=0, sizing_mode="stretch_width", margin=0),
+#        pn.widgets.FileInput(height=100, css_classes=["pnx-file-upload-area"]),
+#    )
+#
+#    return fileinput_section

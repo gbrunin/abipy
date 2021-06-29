@@ -14,12 +14,14 @@ from monty.collections import AttrDict
 from monty.itertools import chunks
 from monty.functools import lazy_property
 from monty.fnmatch import WildCard
+from monty.dev import deprecated
 from pydispatch import dispatcher
 from pymatgen.core.units import EnergyArray
 from . import wrappers
 from .nodes import Dependency, Node, NodeError, NodeResults, FileNode #, check_spectator
-from .tasks import (Task, AbinitTask, ScfTask, NscfTask, DfptTask, PhononTask, ElasticTask, DdkTask, EffMassTask,
-                    BseTask, RelaxTask, DdeTask, BecTask, ScrTask, SigmaTask, TaskManager,
+from .tasks import (Task, AbinitTask, ScfTask, NscfTask, DfptTask, PhononTask, ElasticTask, DdkTask,
+                    DkdkTask, QuadTask, FlexoETask, DdeTask, BecTask,
+                    EffMassTask, BseTask, RelaxTask, ScrTask, SigmaTask, TaskManager,
                     DteTask, EphTask, KerangeTask, CollinearThenNonCollinearScfTask)
 
 from .utils import Directory
@@ -420,6 +422,21 @@ class NodeContainer(metaclass=abc.ABCMeta):
         kwargs["task_class"] = DdkTask
         return self.register_task(*args, **kwargs)
 
+    def register_dkdk_task(self, *args, **kwargs):
+        """Register a DkdkTask task."""
+        kwargs["task_class"] = DkdkTask
+        return self.register_task(*args, **kwargs)
+
+    def register_quad_task(self, *args, **kwargs):
+        """Register a QuadTask task."""
+        kwargs["task_class"] = QuadTask
+        return self.register_task(*args, **kwargs)
+
+    def register_flexoe_task(self, *args, **kwargs):
+        """Register a FlexETask task."""
+        kwargs["task_class"] = FlexoETask
+        return self.register_task(*args, **kwargs)
+
     def register_effmass_task(self, *args, **kwargs):
         """Register a effective mass task."""
         kwargs["task_class"] = EffMassTask
@@ -468,9 +485,18 @@ class NodeContainer(metaclass=abc.ABCMeta):
             kwargs.update({"manager": seq_manager})
 
         if eph_inp.get("eph_task",0) == -4:
-            max_cores   = TaskManager.from_user_config().qadapter.max_cores
-            natom3      = 3 * len(eph_inp.structure)
-            nprocs      = max(max_cores - max_cores % natom3, 1)
+            max_cores = TaskManager.from_user_config().qadapter.max_cores
+            natom3 = 3 * len(eph_inp.structure)
+            nprocs = max(max_cores - max_cores % natom3, 1)
+            new_manager = TaskManager.from_user_config().new_with_fixed_mpi_omp(nprocs, 1)
+            kwargs.update({"manager": new_manager})
+
+        if eph_inp.get("eph_task",0) == 9:
+            nkptgw = eph_inp.vars["nkptgw"]
+            max_cores = TaskManager.from_user_config().qadapter.max_cores
+            nprocs = max_cores
+            if max_cores > nkptgw:
+                nprocs = nkptgw
             new_manager = TaskManager.from_user_config().new_with_fixed_mpi_omp(nprocs, 1)
             kwargs.update({"manager": new_manager})
 
@@ -762,6 +788,17 @@ class Work(BaseWork, NodeContainer):
         self.indir.makedirs()
         self.outdir.makedirs()
         self.tmpdir.makedirs()
+
+        # Add README.md file if set
+        readme_md = getattr(self, "readme_md", None)
+        if readme_md is not None:
+            with open(self.path_in_workdir("README.md"), "wt") as fh:
+                fh.write(readme_md)
+
+        # Add abipy_meta.json file if set
+        data = getattr(self, "abipy_meta_json", None)
+        if data is not None:
+            self.write_json_in_workdir("abipy_meta.json", data)
 
         # Build dirs and files of each task.
         for task in self:
@@ -1262,6 +1299,8 @@ class QptdmWork(Work):
     .. rubric:: Inheritance Diagram
     .. inheritance-diagram:: QptdmWork
     """
+
+    @deprecated(message="QptdmWork is deprecated and will be removed in abipy 1.0, use flowtk.ScreeningWork")
     def create_tasks(self, wfk_file, scr_input):
         """
         Create the SCR tasks and register them in self.
@@ -1344,10 +1383,11 @@ class QptdmWork(Work):
 
 class MergeDdb(object):
     """
-    Mixin class for Works that have to merge the DDB files produced by the tasks.
+    Mixin class for Works that need to merge the DDB files produced by the tasks in self.
     """
 
-    def add_becs_from_scf_task(self, scf_task, ddk_tolerance, ph_tolerance):
+    def add_becs_from_scf_task(self, scf_task, ddk_tolerance, ph_tolerance,
+                               with_quad=False, with_flexoe=False):
         """
         Build tasks for the computation of Born effective charges and add them to the work.
 
@@ -1355,8 +1395,12 @@ class MergeDdb(object):
             scf_task: |ScfTask| object.
             ddk_tolerance: dict {"varname": value} with the tolerance used in the DDK run. None to use AbiPy default.
             ph_tolerance: dict {"varname": value} with the tolerance used in the phonon run. None to use AbiPy default.
+            with_quad: Activate calculation of dynamical quadrupoles.
+                Note that only selected features are compatible with dynamical quadrupoles.
+                Please consult <https://docs.abinit.org/topics/longwave/>
+            with_flexoe: True to activate computation of flexoelectric tensor.
 
-        Return: (ddk_tasks, bec_tasks)
+        Return: (ddk_tasks, bec_tasks, dkdk_task, quad_task)
         """
         if not isinstance(scf_task, ScfTask):
             raise TypeError("task `%s` does not inherit from ScfTask" % scf_task)
@@ -1374,13 +1418,50 @@ class MergeDdb(object):
         bec_deps = {ddk_task: "DDK" for ddk_task in ddk_tasks}
         bec_deps.update({scf_task: "WFK"})
 
-        bec_inputs = scf_task.input.make_bec_inputs(tolerance=ph_tolerance)
+        if with_flexoe:
+            bec_inputs = scf_task.input.make_strain_perts_inputs(tolerance=ph_tolerance,
+                                                                 phonon_pert=True, efield_pert=True,
+                                                                 prepalw=1)
+
+        else:
+            bec_inputs = scf_task.input.make_bec_inputs(tolerance=ph_tolerance,
+                                                        prepalw=1 if with_quad else 0)
+
         bec_tasks = []
         for bec_inp in bec_inputs:
             bec_task = self.register_bec_task(bec_inp, deps=bec_deps)
             bec_tasks.append(bec_task)
 
-        return ddk_tasks, bec_tasks
+        if with_quad or with_flexoe:
+            # Response function calculation of d2/dkdk wave function.
+            # See <https://docs.abinit.org/tests/tutorespfn/Input/tlw_4.abi>
+            dkdk_inp = scf_task.input.make_dkdk_input(tolerance=ddk_tolerance)
+            dkdk_task = self.register_dkdk_task(dkdk_inp, deps=bec_deps)
+
+            quad_deps = bec_deps.copy()
+            quad_deps.update({dkdk_task: "DKDK"})
+            quad_deps.update({bec_task: ["1DEN", "1WF"] for bec_task in bec_tasks})
+
+            if with_quad:
+                # Dynamic Quadrupoles calculation
+                quad_inp = scf_task.input.make_quad_input(tolerance=ph_tolerance)
+                quad_task = self.register_quad_task(quad_inp, deps=quad_deps)
+
+            if with_flexoe:
+                #flexoe_inp = scf_task.input.make_flexoe_input(tolerance=ph_tolerance)
+                flexoe_inp = scf_task.input.new_with_vars(
+                    optdriver=10,
+                    lw_flexo=1,
+                    kptopt=2,
+                    useylm=1,
+                    #get1wf5   4
+                    #get1den5  4
+                    #getddk5   2
+                    #getdkdk5  3
+                )
+
+                flexoe_task = self.register_flexoe_task(flexoe_inp, deps=quad_deps)
+
 
     def merge_ddb_files(self, delete_source_ddbs=False, only_dfpt_tasks=True,
                         exclude_tasks=None, include_tasks=None):
@@ -1468,7 +1549,7 @@ class MergeDdb(object):
         out_dvdb = self.outdir.path_in("out_DVDB")
 
         if len(pot1_files) == 1:
-            # Avoid the merge. Just move the DDB file to the outdir of the work
+            # Avoid the merge. Just move the DVDB file to the outdir of the work
             shutil.copy(pot1_files[0], out_dvdb)
         else:
             # FIXME: The merge may require a non-negligible amount of memory if lots of qpts.
@@ -1493,8 +1574,9 @@ class PhononWork(Work, MergeDdb):
     """
 
     @classmethod
-    def from_scf_task(cls, scf_task, qpoints, is_ngqpt=False, tolerance=None, with_becs=False,
-                      ddk_tolerance=None, prtwf=-1, manager=None):
+    def from_scf_task(cls, scf_task, qpoints, is_ngqpt=False, with_becs=False,
+                      with_quad=False, with_flexoe=False, with_dvdb=True,
+                      tolerance=None, ddk_tolerance=None, prtwf=-1, manager=None):
         """
         Construct a `PhononWork` from a |ScfTask| object.
         The input file for phonons is automatically generated from the input of the ScfTask.
@@ -1505,9 +1587,15 @@ class PhononWork(Work, MergeDdb):
             qpoints: q-points in reduced coordinates. Accepts single q-point, list of q-points
                 or three integers defining the q-mesh if `is_ngqpt`.
             is_ngqpt: True if `qpoints` should be interpreted as divisions instead of q-points.
+            with_becs: Activate calculation of Electric field and Born effective charges.
+            with_quad: Activate calculation of dynamical quadrupoles. Require `with_becs`
+                Note that only selected features are compatible with dynamical quadrupoles.
+                Please consult <https://docs.abinit.org/topics/longwave/>
+            with_flexoe: True to activate computation of flexoelectric tensor. Require `with_becs`
+            with_dvdb: True to merge POT1 files associated to atomic perturbations in the DVDB file
+                at the end of the calculation
             tolerance: dict {"varname": value} with the tolerance to be used in the phonon run.
                 None to use AbiPy default.
-            with_becs: Activate calculation of Electric field and Born effective charges.
             ddk_tolerance: dict {"varname": value} with the tolerance used in the DDK run if with_becs.
                 None to use AbiPy default.
             prtwf: Controls the output of the first-order WFK.
@@ -1525,8 +1613,15 @@ class PhononWork(Work, MergeDdb):
         qpoints = np.reshape(qpoints, (-1, 3))
 
         new = cls(manager=manager)
+        new.with_dvdb = with_dvdb
+
+        if (with_quad or with_flexoe) and not with_becs:
+            raise RuntimeError("with_quad or with_flexoe require with_becs")
+
         if with_becs:
-            new.add_becs_from_scf_task(scf_task, ddk_tolerance, ph_tolerance=tolerance)
+            # Special treatment of q == 0.
+            new.add_becs_from_scf_task(scf_task, ddk_tolerance, ph_tolerance=tolerance,
+                                       with_quad=with_quad, with_flexoe=with_flexoe)
 
         for qpt in qpoints:
             is_gamma = np.sum(qpt ** 2) < 1e-12
@@ -1540,8 +1635,9 @@ class PhononWork(Work, MergeDdb):
         return new
 
     @classmethod
-    def from_scf_input(cls, scf_input, qpoints, is_ngqpt=False, tolerance=None,
-                       with_becs=False, ddk_tolerance=None, prtwf=-1, manager=None):
+    def from_scf_input(cls, scf_input, qpoints, is_ngqpt=False, with_becs=False,
+                       with_quad=False, with_flexoe=False,
+                       with_dvdb=True, tolerance=None, ddk_tolerance=None, prtwf=-1, manager=None):
         """
         Similar to `from_scf_task`, the difference is that this method requires
         an input for SCF calculation. A new |ScfTask| is created and added to the Work.
@@ -1553,11 +1649,18 @@ class PhononWork(Work, MergeDdb):
         qpoints = np.reshape(qpoints, (-1, 3))
 
         new = cls(manager=manager)
+        new.with_dvdb = with_dvdb
+
         # Create ScfTask
         scf_task = new.register_scf_task(scf_input)
 
+        if (with_quad or with_flexoe) and not with_becs:
+            raise RuntimeError("with_quad or with_flexoe require with_becs")
+
         if with_becs:
-            new.add_becs_from_scf_task(scf_task, ddk_tolerance, ph_tolerance=tolerance)
+            # Special treatment of q == 0.
+            new.add_becs_from_scf_task(scf_task, ddk_tolerance, ph_tolerance=tolerance,
+                                       with_quad=with_quad, with_flexoe=with_flexoe)
 
         for qpt in qpoints:
             is_gamma = np.sum(qpt ** 2) < 1e-12
@@ -1578,9 +1681,11 @@ class PhononWork(Work, MergeDdb):
         the final DDB file in the outdir of the |Work|.
         """
         # Merge DDB files.
-        out_ddb = self.merge_ddb_files()
-        # Merge DVDB files.
-        out_dvdb = self.merge_pot1_files()
+        out_ddb = self.merge_ddb_files(only_dfpt_tasks=False)
+
+        if getattr(self, "with_dvdb", True):
+            # Merge DVDB files (use getattr to maintain backward compability with pickle).
+            out_dvdb = self.merge_pot1_files()
 
         return self.Results(node=self, returncode=0, message="DDB merge done")
 
@@ -1719,7 +1824,7 @@ class PhononWfkqWork(Work, MergeDdb):
         the final DDB file in the outdir of the |Work|.
         """
         # Merge DDB files.
-        out_ddb = self.merge_ddb_files()
+        out_ddb = self.merge_ddb_files(only_dfpt_tasks=True)
 
         # Merge DVDB files.
         out_dvdb = self.merge_pot1_files()
@@ -1760,7 +1865,7 @@ class GKKPWork(Work):
         # Create a WFK task
         kptopt = 1 if expand else 3
         nscf_inp = inp.new_with_vars(iscf=-2, kptopt=kptopt)
-        wfk_task = new.register_nscf_task(nscf_inp, deps={den_file: "DEN"},manager=tm)
+        wfk_task = new.register_nscf_task(nscf_inp, deps={den_file: "DEN"}, manager=tm)
         new.wfkq_tasks.append(wfk_task)
         new.wfk_task = wfk_task
 
@@ -1940,7 +2045,7 @@ class BecWork(Work, MergeDdb):
         the final DDB file in the outdir of the |Work|.
         """
         # Merge DDB files.
-        out_ddb = self.merge_ddb_files()
+        out_ddb = self.merge_ddb_files(only_dfpt_tasks=True)
         return self.Results(node=self, returncode=0, message="DDB merge done")
 
 
@@ -2010,7 +2115,7 @@ class DteWork(Work, MergeDdb):
         the final DDB file in the outdir of the `Work`.
         """
         # Merge DDB files.
-        out_ddb = self.merge_ddb_files()
+        out_ddb = self.merge_ddb_files(only_dfpt_tasks=True)
         return self.Results(node=self, returncode=0, message="DDB merge done")
 
 
@@ -2040,9 +2145,9 @@ class ConducWork(Work):
         Construct a ConducWork from a |PhononWork| and |MultiDataset|.
 
         Args:
-            phwork: a |PhononWork| object calculating the DDB and DVDB files.
-            multi: a |MultiDataset| object containing a list of 3 datasets or 5 with Kerange.
-                       See abipy/abio/factories.py -> conduc_from_scf_nscf_inputs for details about multi.
+            phwork: |PhononWork| object calculating the DDB and DVDB files.
+            multi: |MultiDataset| object containing a list of 3 datasets or 5 with Kerange.
+                See abipy/abio/factories.py -> conduc_from_scf_nscf_inputs for details about multi.
             nbr_proc: Required if with_kerange since autoparal doesn't work with optdriver=8.
             flow: The flow calling the work. Used for  with_fixed_mpi_omp.
             with_kerange: True if using Kerange.
@@ -2109,7 +2214,7 @@ class ConducWork(Work):
             manager: |TaskManager| of the task. If None, the manager is initialized from the config file.
         """
         # Verify Multi
-        if (not with_kerange) and (multi.ndtset != 3): #Without kerange, multi should contain 4 datasets
+        if (not with_kerange) and (multi.ndtset != 3): # Without kerange, multi should contain 4 datasets
             raise ValueError("""The |MultiDataset| object does not contain the expected number of dataset.
                                 It should have 4 datasets and it had `%s`. You should generate
                                 multi with the factory function conduc_from_scf_nscf_inputs""" % multi.ndtset)

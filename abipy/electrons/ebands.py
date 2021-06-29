@@ -1410,7 +1410,7 @@ class ElectronBands(Has_Structure):
 
         if unicode:
             import re
-            numl=re.findall(r'\d', formula)
+            numl = re.findall(r'\d', formula)
             for s in numl:
                 formula = formula.replace(s,SUBSCRIPT_UNICODE[s])
 
@@ -1458,7 +1458,6 @@ class ElectronBands(Has_Structure):
             for k, v in d.items():
                 k0_list.append(k)
                 effmass_bands_f90.append(v)
-
 
         # Set small values to zero.
         k0_list = np.reshape(k0_list, (-1, 3))
@@ -2105,7 +2104,7 @@ class ElectronBands(Has_Structure):
         ply_row, ply_col = rcd.ply_row, rcd.ply_col
 
         # Decorate the axis (e.g add ticks and labels).
-        self.decorate_plotly(fig, klabels=klabels, iax = rcd.iax)
+        self.decorate_plotly(fig, klabels=klabels, iax=rcd.iax)
         plotly_set_lims(fig, ylims, "y")
 
         # Plot the band energies.
@@ -2374,6 +2373,7 @@ class ElectronBands(Has_Structure):
             lw_opts = kwargs.pop("lw_opts", dict(opacity=0.6))
             lw_fact = lw_opts.pop("fact", 2.0)
 
+        marker_opts = kwargs.pop("marker", None)
         xx = np.arange(self.nkpt)
         e0 = self.get_e0(e0)
         for spin in spin_range:
@@ -2383,20 +2383,23 @@ class ElectronBands(Has_Structure):
                 # Set label only at the first iteration
                 rcd = PlotlyRowColDesc.from_object(rcd)
                 ply_row, ply_col = rcd.ply_row, rcd.ply_col
-                fig.add_scatter(x=xx, y=yy, mode="lines", name=label, showlegend=showlegend, line=line_opts, **kwargs,
-                                row=ply_row, col=ply_col)
+                if marker_opts:
+                    fig.add_scatter(x=xx, y=yy, mode="lines+markers", name=label, showlegend=showlegend, line=line_opts,
+                                    marker=marker_opts, **kwargs, row=ply_row, col=ply_col)
+                else:
+                    fig.add_scatter(x=xx, y=yy, mode="lines", name=label, showlegend=showlegend, line=line_opts,
+                                    **kwargs, row=ply_row, col=ply_col)
                 label = ''
-                showlegend=False
+                showlegend = False
 
                 if with_linewidths:
                     w = self.linewidths[spin, :, band] * lw_fact / 2
-                    lw_color = lines[-1].get_color()
-                    raise NotImplementedError
-                    # solution 1: Use scater points to fill
-                    # solution 2: add two traces and fill the area between
-                    # color problem
-                    #!! ax.fill_between(xx, yy - w, yy + w, facecolor=lw_color, **lw_opts)
-                    #, alpha=self.alpha, facecolor=self.l2color[l])
+                    lw_opts.update({'color': "black" if spin == 0 else "red"})
+                    fig.add_scatter(x=xx, y=yy - w, mode='lines', line=lw_opts, name='',
+                                    showlegend=False, row=ply_row, col=ply_col)
+                    fig.add_scatter(x=xx, y=yy + w, mode='lines', line=lw_opts, name='',
+                                    showlegend=False, fill='tonexty', row=ply_row, col=ply_col)
+
 
     def _make_ticks_and_labels(self, klabels):
         """Return ticks and labels from the mapping qlabels."""
@@ -2531,7 +2534,7 @@ class ElectronBands(Has_Structure):
         if fig is None:
             # Build fig.
             fig, _ = get_figs_plotly(nrows=1, ncols=2, sharex=False, sharey=True,
-                                     horizontal_spacing=0.05, column_widths=width_ratios)
+                                     horizontal_spacing=0.02, column_widths=width_ratios)
 
         # Define the zero of energy.
         e0 = self.get_e0(e0) if e0 != "edos_fermie" else edos.fermie
@@ -3978,7 +3981,7 @@ class ElectronDos(object):
             fig.add_scatter(x=x, y=y, mode='lines', name=trace_name, showlegend=showlegend, line=opts, **kwargs)
 
         xlabel, ylabel = 'Energy (eV)', 'DOS (states/eV)'
-        if exchange_xy: xlabel, ylabel =  ylabel, xlabel
+        if exchange_xy: xlabel, ylabel = ylabel, xlabel
         fig.layout.xaxis.title = xlabel
         fig.layout.yaxis.title = ylabel
         plotly_set_lims(fig, xlims, "x")

@@ -1,4 +1,3 @@
-ipython
 jupyter
 nbformat
 pygments
@@ -11,8 +10,8 @@ ase
 param
 panel
 bokeh
-chart-studio
 XlsxWriter  # For DataFrame.to_excel()
+#pymdown-extensions
 # Unit tests
 python-coveralls
 pytest
