@@ -2058,7 +2058,7 @@ with the Abinit version you are using. Please contact the AbiPy developers.""" %
             ibte_abs_tol=ibte_abs_tol,
             nband=nband,
             kptopt=kptopt,
-            eph_restart=eph_restart
+            eph_restart=eph_restart,
             comment="Input file for phonon-limited transport calculations.",
         )
 
