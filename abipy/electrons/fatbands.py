@@ -1,17 +1,20 @@
 # coding: utf-8
 """Classes for the analysis of electronic fatbands and projected DOSes."""
+from __future__ import annotations
 
 import traceback
 import numpy as np
 
 from collections import OrderedDict, defaultdict
+#from typing import List
 from tabulate import tabulate
 from monty.termcolor import cprint
 from monty.functools import lazy_property
 from monty.string import marquee
 from pymatgen.core.periodic_table import Element
 from abipy.core.mixins import AbinitNcFile, Has_Header, Has_Structure, Has_ElectronBands, NotebookWriter
-from abipy.electrons.ebands import ElectronsReader
+from abipy.core.structure import Structure
+from abipy.electrons.ebands import ElectronBands, ElectronsReader
 from abipy.tools.numtools import gaussian
 from abipy.tools.plotting import (set_axlims, get_axarray_fig_plt, add_fig_kwargs, get_figs_plotly,
     add_plotly_fig_kwargs, PlotlyRowColDesc, plotly_set_lims)
@@ -85,11 +88,11 @@ class FatBandsFile(AbinitNcFile, Has_Header, Has_Structure, Has_ElectronBands, N
     #klabel_size = None
 
     @classmethod
-    def from_file(cls, filepath):
+    def from_file(cls, filepath: str) -> FatBandsFile:
         """Initialize the object from a netcdf_ file"""
         return cls(filepath)
 
-    def __init__(self, filepath):
+    def __init__(self, filepath: str):
         super().__init__(filepath)
         self.reader = r = ElectronsReader(filepath)
 
@@ -116,7 +119,7 @@ class FatBandsFile(AbinitNcFile, Has_Header, Has_Structure, Has_ElectronBands, N
             self.xredsph_extra = r.read_value("xredsph_extra")
         if self.natsph_extra != 0:
             raise NotImplementedError("natsph_extra is not implemented, "
-              "but it's just a matter of using natom + natsph_extra")
+                                      "but it's just a matter of using natom + natsph_extra")
 
         # This is a tricky part. Note the following:
         # If usepaw == 0, lmax_type gives the max l included in the non-local part of Vnl
@@ -201,7 +204,7 @@ class FatBandsFile(AbinitNcFile, Has_Header, Has_Structure, Has_ElectronBands, N
             wal_sbk = np.reshape(self.reader.read_value(key), wshape)
 
         else:
-            # Need to tranfer data. Note np.zeros.
+            # Need to transfer data. Note np.zeros.
             wal_sbk = np.zeros(wshape)
             if self.natsph == self.natom and np.any(self.iatsph != np.arange(self.natom)):
                 print("Will rearrange filedata since iatsp != [1, 2, ...])")
@@ -248,7 +251,7 @@ class FatBandsFile(AbinitNcFile, Has_Header, Has_Structure, Has_ElectronBands, N
             walm_sbk = np.reshape(self.reader.read_value(key), wshape)
 
         else:
-            # Need to tranfer data. Note np.zeros.
+            # Need to transfer data. Note np.zeros.
             walm_sbk = np.zeros(wshape)
             if self.natsph == self.natom and np.any(self.iatsph != np.arange(self.natom)):
                 print("Will rearrange filedata since iatsp != [1, 2, ...])")
@@ -273,22 +276,22 @@ class FatBandsFile(AbinitNcFile, Has_Header, Has_Structure, Has_ElectronBands, N
         return walm_sbk
 
     @property
-    def ebands(self):
+    def ebands(self) -> ElectronBands:
         """|ElectronBands| object."""
         return self._ebands
 
     @property
-    def structure(self):
+    def structure(self) -> Structure:
         """|Structure| object."""
         return self.ebands.structure
 
     @lazy_property
-    def params(self):
+    def params(self) -> dict:
         """:class:`OrderedDict` with parameters that might be subject to convergence studies."""
         od = self.get_ebands_params()
         return od
 
-    def close(self):
+    def close(self) -> None:
         """Called at the end of the ``with`` context manager."""
         return self.reader.close()
 
@@ -296,7 +299,7 @@ class FatBandsFile(AbinitNcFile, Has_Header, Has_Structure, Has_ElectronBands, N
         """String representation"""
         return self.to_string()
 
-    def to_string(self, verbose=0):
+    def to_string(self, verbose: int = 0) -> str:
         """String representation."""
         lines = []; app = lines.append
 
@@ -590,7 +593,7 @@ class FatBandsFile(AbinitNcFile, Has_Header, Has_Structure, Has_ElectronBands, N
 
     @add_plotly_fig_kwargs
     def plotly_fatbands_lview(self, e0="fermie", fact=1.0, fig=None, lmax=None,
-                            ylims=None, blist=None, fontsize=12, band_and_dos=0,  **kwargs):
+                              ylims=None, blist=None, fontsize=12, band_and_dos=0,  **kwargs):
         """
         Plot the electronic fatbands grouped by L with plotly.
 
@@ -605,8 +608,8 @@ class FatBandsFile(AbinitNcFile, Has_Header, Has_Structure, Has_ElectronBands, N
             ylims: Set the data limits for the y-axis. Accept tuple e.g. ``(left, right)``
             blist: List of band indices for the fatband plot. If None, all bands are included
             fontsize: Legend and subtitle fontsize.
-            band_and_dos : Define if both band and dos will be ploted on the same ``fig``.
-                           If 0(default), only plot band on the created figure (when fig==None);
+            band_and_dos : Define if both band and dos will be plotted on the same ``fig``.
+                           If 0 (default), only plot band on the created figure (when fig==None);
                            If 1, plot band on odd_col of ``fig``
 
         Returns: |plotly.graph_objects.Figure|
@@ -661,10 +664,12 @@ class FatBandsFile(AbinitNcFile, Has_Header, Has_Structure, Has_ElectronBands, N
                                         name='', showlegend=False, legendgroup=symbol, row=ply_row, col=ply_col)
                         if (l, spin, ib) == (0, 0, 0):
                             fig.add_scatter(x=x, y=y2, mode='lines', line=fill_line_opts, opacity=self.alpha,
-                                            name=symbol, showlegend=True, legendgroup=symbol, fill='tonexty', row=ply_row, col=ply_col)
+                                            name=symbol, showlegend=True, legendgroup=symbol, fill='tonexty',
+                                            row=ply_row, col=ply_col)
                         else:
                             fig.add_scatter(x=x, y=y2, mode='lines', line=fill_line_opts, opacity=self.alpha,
-                                            name='', showlegend=False, legendgroup=symbol, fill='tonexty', row=ply_row, col=ply_col)
+                                            name='', showlegend=False, legendgroup=symbol, fill='tonexty',
+                                            row=ply_row, col=ply_col)
                         yup, ydown = y1, y2
 
                 plotly_set_lims(fig, ylims, "y", iax=iax)
@@ -758,7 +763,7 @@ class FatBandsFile(AbinitNcFile, Has_Header, Has_Structure, Has_ElectronBands, N
 
     @add_fig_kwargs
     def plot_fatbands_typeview(self, e0="fermie", fact=1.0, lmax=None, ax_mat=None, ylims=None,
-                              blist=None, fontsize=8, **kwargs):
+                               blist=None, fontsize=8, **kwargs):
         """
         Plot the electronic fatbands grouped by atomic type with matplotlib.
 
@@ -823,7 +828,7 @@ class FatBandsFile(AbinitNcFile, Has_Header, Has_Structure, Has_ElectronBands, N
 
     @add_plotly_fig_kwargs
     def plotly_fatbands_typeview(self, e0="fermie", fact=1.0, lmax=None, fig=None, ylims=None,
-                              blist=None, fontsize=12, band_and_dos=0, **kwargs):
+                                 blist=None, fontsize=12, band_and_dos=0, **kwargs):
         """
         Plot the electronic fatbands grouped by atomic type with plotly.
 
@@ -838,7 +843,7 @@ class FatBandsFile(AbinitNcFile, Has_Header, Has_Structure, Has_ElectronBands, N
             ylims: Set the data limits for the y-axis. Accept tuple e.g. ``(left, right)``
             blist: List of band indices for the fatband plot. If None, all bands are included
             fontsize: Legend and subtitle fontsize.
-            band_and_dos : Define if both band and dos will be ploted on the same ``fig``.
+            band_and_dos : Define if both band and dos will be plotted on the same ``fig``.
                            If 0(default), only plot band on the created figure (when fig==None);
                            If 1, plot band on odd_col of ``fig``
 
@@ -892,7 +897,8 @@ class FatBandsFile(AbinitNcFile, Has_Header, Has_Structure, Has_ElectronBands, N
                                         opacity=self.alpha, showlegend=False, legendgroup=l, row=ply_row, col=ply_col)
                         if (itype, spin, band) == (0, 0, 0):
                             fig.add_scatter(x=x, y=y2, mode='lines', line=fill_line_opts, name=self.l2tex[l],
-                                        opacity=self.alpha, showlegend=True, legendgroup=l, fill='tonexty', row=ply_row, col=ply_col)
+                                           opacity=self.alpha, showlegend=True, legendgroup=l, fill='tonexty',
+                                           row=ply_row, col=ply_col)
                         else:
                             fig.add_scatter(x=x, y=y2, mode='lines', line=fill_line_opts, name='', opacity=self.alpha,
                                             showlegend=False, legendgroup=l, fill='tonexty', row=ply_row, col=ply_col)
@@ -1109,6 +1115,15 @@ class FatBandsFile(AbinitNcFile, Has_Header, Has_Structure, Has_ElectronBands, N
         self._cached_dos_integrators[key] = intg
         return intg
 
+    #def get_projected_magnetisation(self):
+    #    """
+    #    Final projected magnetisation as a numpy array with the shape (nkpoints, nbands,
+    #    natoms, norbitals, 3). Where the last axis is the contribution in the 3
+    #    cartesian directions. This attribute is only set if spin-orbit coupling
+    #    (LSORBIT = True) or non-collinear magnetism (LNONCOLLINEAR = True) is turned
+    #    on in the INCAR.
+    #    """
+
     @add_fig_kwargs
     def plot_pjdos_lview(self, e0="fermie", lmax=None, method="gaussian", step=0.1, width=0.2,
                          stacked=True, combined_spins=True, ax_mat=None, exchange_xy=False,
@@ -1291,7 +1306,7 @@ class FatBandsFile(AbinitNcFile, Has_Header, Has_Structure, Has_ElectronBands, N
             xlims: Set the data limits for the x-axis. Accept tuple e.g. ``(left, right)``
             ylims: Same meaning as ``xlims`` but for the y-axis
             fontsize:  Legend and subtitle fontsize.
-            band_and_dos : Define if both band and dos will be ploted on the same ``fig``.
+            band_and_dos : Define if both band and dos will be plotted on the same ``fig``.
                            If 0(default), only plot dos on the created figure (when fig==None);
                            If 1, plot dos on even_col of ``fig``
 
@@ -1616,7 +1631,7 @@ class FatBandsFile(AbinitNcFile, Has_Header, Has_Structure, Has_ElectronBands, N
             xlims: Set the data limits for the x-axis. Accept tuple e.g. ``(left, right)``
             ylims: Same meaning as ``xlims`` but for the y-axis
             fontsize: Legend and subtitle fontsize.
-            band_and_dos : Define if both band and dos will be ploted on the same ``fig``.
+            band_and_dos : Define if both band and dos will be plotted on the same ``fig``.
                            If 0(default), only plot dos on the created figure (when fig==None);
                            If 1, plot dos on even_col of ``fig``
 
@@ -1716,7 +1731,7 @@ class FatBandsFile(AbinitNcFile, Has_Header, Has_Structure, Has_ElectronBands, N
                     for l in range(min(self.lmax_symbol[symbol] + 1, mylsize)):
                         yup = stack[l]
                         ydown = stack[l-1] if l != 0 else zerodos
-                        label = r"$%s\text{ (stacked)}$" % self.l2tex[l].replace('$','') if (isymb, spin) == (0, 0) else None
+                        label = r"%s (stacked)" % self.l2tex[l].replace('$','') if (isymb, spin) == (0, 0) else None
                         fill = 'tonextx' if not exchange_xy else 'tonexty'
                         fill_line_opts = {'color': self.l2color[l], 'width': 0.1}
                         x1, x2, y1, y2 = mesh, mesh, ydown, yup
@@ -1740,7 +1755,7 @@ class FatBandsFile(AbinitNcFile, Has_Header, Has_Structure, Has_ElectronBands, N
                     if combined_spins:
                         title = "Type: %s" % symbol
                     else:
-                        title = r"$%s , %s$" % (symbol, self.spin2tex[spin].replace('$','')) if self.nsppol == 2 else symbol
+                        title = r"%s , %s" % (symbol, self.spin2tex[spin].replace('$','')) if self.nsppol == 2 else symbol
                     fig.layout.annotations[iax - 1].text = title
                 else:
                     fig.layout.annotations[iax - 1].text = ''
@@ -1910,8 +1925,8 @@ class FatBandsFile(AbinitNcFile, Has_Header, Has_Structure, Has_ElectronBands, N
             self.plotly_fatbands_lview(e0=e0, fact=fact, lmax=lmax, blist=blist, fig=fig, ylims=ylims,
                                        fontsize=fontsize, band_and_dos=1, show=False)
             pjdosfile.plotly_pjdos_lview(e0=e0, lmax=lmax, fig=fig, exchange_xy=True, stacked=stacked,
-                                       combined_spins=False, fontsize=fontsize, with_info=False,
-                                        with_spin_sign=False, ylims=ylims, band_and_dos=1, show=False, **edos_kwargs)
+                                         combined_spins=False, fontsize=fontsize, with_info=False,
+                                         with_spin_sign=False, ylims=ylims, band_and_dos=1, show=False, **edos_kwargs)
 
         elif view == "type":
             self.plotly_fatbands_typeview(e0=e0, fact=fact, lmax=lmax, blist=blist, fig=fig, ylims=ylims,
@@ -2121,7 +2136,6 @@ class FatBandsFile(AbinitNcFile, Has_Header, Has_Structure, Has_ElectronBands, N
         This function *generates* a predefined list of matplotlib figures with minimal input from the user.
         Used in abiview.py to get a quick look at the results.
         """
-        #for fig in self.yield_ebands_figs(): yield fig
         if self.ebands.kpoints.is_path:
             yield self.ebands.kpoints.plot(show=False)
             yield self.plot_fatbands_lview(show=False)
@@ -2130,12 +2144,24 @@ class FatBandsFile(AbinitNcFile, Has_Header, Has_Structure, Has_ElectronBands, N
             yield self.plot_pjdos_lview(show=False)
             yield self.plot_pjdos_typeview(show=False)
 
-    def get_panel(self):
+    def yield_plotly_figs(self, **kwargs):  # pragma: no cover
+        """
+        This function *generates* a predefined list of plotly figures with minimal input from the user.
+        """
+        if self.ebands.kpoints.is_path:
+            yield self.ebands.kpoints.plotly(show=False)
+            yield self.plotly_fatbands_lview(show=False)
+            yield self.plotly_fatbands_typeview(show=False)
+        else:
+            yield self.plotly_pjdos_lview(show=False)
+            yield self.plotly_pjdos_typeview(show=False)
+
+    def get_panel(self, **kwargs):
         """
         Build panel with widgets to interact with the |FatbandsFile| either in a notebook or in panel app.
         """
         from abipy.panels.fatbands import FatBandsFilePanel
-        return FatBandsFilePanel(self).get_panel()
+        return FatBandsFilePanel(self).get_panel(**kwargs)
 
     def write_notebook(self, nbpath=None):
         """

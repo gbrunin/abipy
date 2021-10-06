@@ -7,6 +7,7 @@ This examples shows how to compute the SCR file with different number of bands
 and different values of ecuteps in order to prepare further GW convergence studies.
 Each screening calculation is automatically parallelized over q-points and the
 partial SCR files are then merged with the mrgscr utility.
+The total SCR file is available in the outdata directory of the ScreeningWork.
 """
 import sys
 import os
@@ -93,7 +94,7 @@ xred_symbols
 
             # IMPORTANT:
             #   If you alredy have a WFK file and you want to skip the SCF + NSCF part
-            #    build the scr_work using `from_wkf_filepath` instead of `from_nscf_task` e.g.:
+            #   build the scr_work using `from_wkf_filepath` instead of `from_nscf_task` e.g.:
 
             #scr_work = ScreeningWork.from_wfk_file(wfk_filepath, scr_inp)
 

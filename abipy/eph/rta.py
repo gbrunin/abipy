@@ -625,8 +625,9 @@ class RtaRobot(Robot, RobotWithEbands):
     #def get_mobility_mu_dataframe(self, eh=0, component='xx', itemp=0, spin=0, **kwargs):
 
     @add_fig_kwargs
-    def plot_mobility_kconv(self, eh=0, bte=('serta', 'mrta', 'ibte'), mode="full", component='xx', itemp=0, spin=0,
-                            fontsize=14, ax=None, **kwargs):
+    
+    def plot_mobility_kconv(self, eh=0, bte=('serta', 'mrta', 'ibte'), mode="full", component='xx', itemp=0, 
+                            spin=0, fontsize=14, ax=None, **kwargs):
         """
         Plot the convergence of the mobility as a function of the number of k-points,
         for different transport formalisms included in the computation.
@@ -635,7 +636,8 @@ class RtaRobot(Robot, RobotWithEbands):
             eh: 0 for electrons, 1 for holes.
             bte: list of transport formalism to plot (serta, mrta, ibte)
             mode: mode for the convergence plot. 'full': normal plot of the mobility
-                                                 'relative': plot of the mobility relative to the value obtained with the densest grid
+                                                 'relative': plot of the mobility relative to 
+                                                             the value obtained with the densest grid
             component: Cartesian component to plot ('xx', 'xy', ...)
             itemp: temperature index.
             spin: Spin index.
@@ -673,7 +675,7 @@ class RtaRobot(Robot, RobotWithEbands):
             temps.append(ncfile.tmesh[itemp])
 
         res.sort(key=lambda t: t[0])
-        res = np.array(res)#, dtype=object)
+        res = np.array(res)
         #print(res)
 
         size = 14
@@ -695,11 +697,11 @@ class RtaRobot(Robot, RobotWithEbands):
                       size=size)
 
         ax.set_title(component+" component, T = {0} K".format(ncfile.tmesh[itemp]),size=size)
-       
+
         if mode == 'relative':
             for ires in [1,2,3]:
                 res[:,ires] = 100*(res[:,ires]-res[-1,ires])/res[-1,ires]
-        
+
         if 'serta' in bte:
             ax.plot(res[:,0], res[:,1], '-ob', label='SERTA')
         if 'mrta' in bte:

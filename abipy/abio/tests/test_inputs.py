@@ -50,8 +50,9 @@ class TestAbinitInput(AbipyTest):
         with self.assertRaises(inp.Error): inp._check_nsppol_nspinor(3, 1)
         with self.assertRaises(inp.Error): inp._check_nsppol_nspinor(2, 2)
         with self.assertRaises(inp.Error): inp._check_nsppol_nspinor(1, 4)
+        with self.assertRaises(inp.Error): inp.set_cutoffs_for_accuracy("normal")
 
-        # unless we deactive spell_check
+        # unless we deactivate spell_check
         assert inp.spell_check
         inp.set_spell_check(False)
         inp["foo"] = 1
@@ -87,6 +88,7 @@ class TestAbinitInput(AbipyTest):
         assert inp.scf_tolvar == ("toldfe", inp["toldfe"])
 
         inp.write(filepath=self.get_tmpname(text=True))
+        assert inp.make_targz().endswith(".tar.gz")
 
         # Cannot change structure variables directly.
         with self.assertRaises(inp.Error):
@@ -98,6 +100,10 @@ class TestAbinitInput(AbipyTest):
         with self.assertRaises(KeyError):
             inp.remove_vars("foo", strict=True)
         assert not inp.remove_vars("foo", strict=False)
+
+        with self.assertRaises(inp.Error):
+            # Pseudos do not provide hints
+            inp.set_cutoffs_for_accuracy("normal")
 
         # Test deepcopy and remove_vars.
         inp["bdgw"] = [1, 2]
@@ -151,6 +157,8 @@ class TestAbinitInput(AbipyTest):
 
         new_inp.set_vars(shiftk=[0, 0, 0, 0.5, 0, 0, 0, 0, 0.5])
         assert new_inp["nshiftk"] == 3
+        other_inp = new_inp.new_with_vars(ph_qpath=[0, 0, 0, 0.5, 0, 0])
+        assert other_inp["ph_nqpath"] == 2
 
     def test_input_errors(self):
         """Testing typical AbinitInput Error"""
@@ -455,6 +463,10 @@ class TestAbinitInput(AbipyTest):
             tolvrs=1.0e-10,
         )
 
+        assert gs_inp.is_input and not gs_inp.is_multidataset
+        multi = gs_inp.replicate(2)
+        assert multi.ndtset == 2 and multi.is_multidataset and not multi.is_input
+
         # Test make_nscf_kptopt0_input
         nscf_inp = gs_inp.make_nscf_kptopt0_input(kpts=[1, 2, 3, 4, 5, 6])
         assert "ngkpt" not in nscf_inp and "shiftk" not in nscf_inp
@@ -493,6 +505,8 @@ class TestAbinitInput(AbipyTest):
         assert len(multi) == 3
         assert all(inp["kptopt"] == 0 for inp in multi)
         assert all(inp["nkpt"] == 2 for inp in multi)
+        assert multi.is_multidataset and not multi.is_input
+        assert multi.make_targz().endswith(".tar.gz")
 
         inp0, inp1, inp2 = multi
         assert inp0["iscf"] == -2
@@ -803,7 +817,8 @@ class TestMultiDataset(AbipyTest):
         assert multi._repr_html_()
 
         inp.write(filepath=self.tmpfileindir("run.abi"))
-        multi.write(filepath=self.tmpfileindir("run.abi"))
+        multi.write(filepath=self.tmpfileindir("run.abi"), split=True)
+        multi.write(filepath=self.tmpfileindir("run.abi"), split=False)
 
         new_multi = MultiDataset.from_inputs([inp for inp in multi])
         assert new_multi.ndtset == multi.ndtset
